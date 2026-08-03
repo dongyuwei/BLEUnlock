@@ -15,6 +15,7 @@ This document is also available in [Japanese (日本語版はこちら)](README.
 - No iPhone app is required
 - Works with any BLE devices that periodically transmits signal from [static MAC address](#notes-on-mac-address)
 - Unlocks your Mac for you when the BLE device is near your Mac, without entering password
+- **Remote unlock (prototype)**: when your Mac is locked, approve it from your phone's browser over Tailscale and it types your password automatically — [bilingual docs (中文/English)](remote-unlock.md)
 - Locks your Mac when the BLE device is away from your Mac
 - Optionally runs your own script upon lock/unlock
 - Optionally wakes from display sleep
@@ -59,6 +60,13 @@ Finally, from the menu bar icon, select *Device*.
 It starts scanning nearby BLE devices.
 Select your device, and you're done!
 
+## Remote Unlock (prototype)
+
+A prototype feature to unlock your Mac from a phone browser over Tailscale.
+Setup, security model, known pitfalls and troubleshooting are documented separately:
+
+**[Remote Unlock documentation (中英双语) → remote-unlock.md](remote-unlock.md)**
+
 ## Options
 
 Option | Description
@@ -94,6 +102,11 @@ Make sure BLEUnlock is turned on in *System Preferences* > *Security & Privacy* 
 If it is already on, try turning it off and on again.
 
 If it asks for permission to access its own password in Keychain, you must choose *Always Allow*, because it is needed while the screen is locked.
+
+### Remote unlock issues
+
+Setup, known pitfalls, troubleshooting and debugging for remote unlock are in the dedicated doc:
+**[Remote Unlock documentation (中英双语) → remote-unlock.md](remote-unlock.md)**
 
 ### "Signal is lost" occurs frequently
 
