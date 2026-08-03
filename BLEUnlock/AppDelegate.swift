@@ -10,6 +10,9 @@ func t(_ key: String) -> String {
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation, NSUserNotificationCenterDelegate, BLEDelegate {
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let ble = BLE()
+    let remote = RemoteUnlockServer()
+    let remoteMenu = NSMenu()
+    var remoteURLLabel: NSMenuItem?
     let mainMenu = NSMenu()
     let deviceMenu = NSMenu()
     let lockRSSIMenu = NSMenu()
@@ -34,6 +37,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
     func menuWillOpen(_ menu: NSMenu) {
         if menu == deviceMenu {
             ble.startScanning()
+        } else if menu == remoteMenu {
+            let ips = remote.tailscaleIPs()
+            let host = ips.first ?? "not connected to Tailscale"
+            remoteURLLabel?.title = "http://\(host):\(remote.port)/  token: \(remote.token)"
         } else if menu == lockRSSIMenu {
             for item in menu.items {
                 if item.tag == ble.lockRSSI {
@@ -340,6 +347,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
     }
 
     @objc func onUnlock() {
+        remote.lockedState = false
         Timer.scheduledTimer(withTimeInterval: 2, repeats: false, block: { _ in
             print("onUnlock")
             if Date().timeIntervalSince1970 >= self.unlockedAt + 10 {
@@ -353,6 +361,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         Timer.scheduledTimer(withTimeInterval: 2, repeats: false, block: { _ in
             checkUpdate()
         })
+    }
+
+    @objc func onScreenLocked() {
+        print("screen locked")
+        remote.lockedState = true
     }
 
     @objc func onScreensaverStart() {
@@ -642,6 +655,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         if prefs.bool(forKey: "sleepDisplay") {
             item.state = .on
         }
+
+        item = mainMenu.addItem(withTitle: "Remote Unlock", action: nil, keyEquivalent: "")
+        item.submenu = remoteMenu
+        remoteMenu.delegate = self
+        let enableRemote = remoteMenu.addItem(withTitle: "Enable Remote Unlock", action: #selector(toggleRemoteUnlock), keyEquivalent: "")
+        enableRemote.state = remote.enabled ? .on : .off
+        remoteURLLabel = remoteMenu.addItem(withTitle: "not started", action: nil, keyEquivalent: "")
+        remoteMenu.addItem(withTitle: "Open Unlock Page…", action: #selector(openRemotePage), keyEquivalent: "")
+        remoteMenu.addItem(withTitle: "Set Access Token…", action: #selector(setRemoteToken), keyEquivalent: "")
+        remoteMenu.addItem(withTitle: "Set Port…", action: #selector(setRemotePort), keyEquivalent: "")
         
         mainMenu.addItem(withTitle: t("set_password"), action: #selector(askPassword), keyEquivalent: "")
 
@@ -715,6 +738,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         nc.addObserver(self, selector: #selector(onSystemWake), name: NSWorkspace.didWakeNotification, object: nil)
 
         let dnc = DistributedNotificationCenter.default
+        dnc.addObserver(self, selector: #selector(onScreenLocked), name: NSNotification.Name(rawValue: "com.apple.screenIsLocked"), object: nil)
         dnc.addObserver(self, selector: #selector(onUnlock), name: NSNotification.Name(rawValue: "com.apple.screenIsUnlocked"), object: nil)
         dnc.addObserver(self, selector: #selector(onScreensaverStart), name: NSNotification.Name(rawValue: "com.apple.screensaver.didstart"), object: nil)
         dnc.addObserver(self, selector: #selector(onScreensaverStop), name: NSNotification.Name(rawValue: "com.apple.screensaver.didstop"), object: nil)
@@ -725,12 +749,141 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         checkAccessibility()
         checkUpdate()
 
+        // --- Remote unlock server setup ---
+        remote.currentLocked = { [weak self] in
+            self?.isScreenLocked() ?? false
+        }
+        remote.onApprove = { [weak self] in
+            var message = "unlock approved"
+            DispatchQueue.main.sync {
+                message = self?.remoteUnlock() ?? "unlock approved"
+            }
+            return message
+        }
+        remote.lockedState = isScreenLocked()
+        if remote.enabled {
+            remote.start()
+        }
+
         // Hide dock icon.
         // This is required because we can't have LSUIElement set to true in Info.plist,
         // otherwise CBCentralManager.scanForPeripherals won't work.
         NSApp.setActivationPolicy(.accessory)
     }
     
+    @objc func toggleRemoteUnlock(_ item: NSMenuItem) {
+        let on = !remote.enabled
+        remote.enabled = on
+        item.state = on ? .on : .off
+        if on && remote.tailscaleIPs().isEmpty {
+            print("Remote: enabled but no Tailscale address found")
+        }
+    }
+
+    @objc func openRemotePage() {
+        if let url = URL(string: "http://127.0.0.1:\(remote.port)/") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc func setRemoteToken() {
+        let msg = NSAlert()
+        msg.addButton(withTitle: t("ok"))
+        msg.addButton(withTitle: t("cancel"))
+        msg.messageText = "Set Access Token"
+        msg.informativeText = "6 位数字。手机浏览器解锁时需输入此令牌。"
+        msg.window.title = "BLEUnlock"
+        let txt = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        txt.stringValue = remote.token
+        msg.accessoryView = txt
+        NSApp.activate(ignoringOtherApps: true)
+        if msg.runModal() == .alertFirstButtonReturn {
+            let v = txt.stringValue.trimmingCharacters(in: .whitespaces)
+            if v.count == 6 && v.allSatisfy({ $0.isNumber }) {
+                remote.token = v
+            } else {
+                errorModal("Token must be a 6-digit number")
+            }
+        }
+    }
+
+    @objc func setRemotePort() {
+        let msg = NSAlert()
+        msg.addButton(withTitle: t("ok"))
+        msg.addButton(withTitle: t("cancel"))
+        msg.messageText = "Set Server Port"
+        msg.window.title = "BLEUnlock"
+        let txt = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        txt.stringValue = String(remote.port)
+        msg.accessoryView = txt
+        NSApp.activate(ignoringOtherApps: true)
+        if msg.runModal() == .alertFirstButtonReturn {
+            let v = Int(txt.stringValue.trimmingCharacters(in: .whitespaces)) ?? 0
+            if v > 0 && v < 65536 {
+                remote.port = UInt16(v)
+                if remote.enabled {
+                    remote.stop()
+                    remote.start()
+                }
+            } else {
+                errorModal("Invalid port")
+            }
+        }
+    }
+
+    func remoteUnlock() -> String {
+        guard isScreenLocked() else {
+            return "Mac 未处于锁定状态"
+        }
+        guard let password = fetchPassword(warn: false) else {
+            return "未在 Mac 上保存密码（菜单：Set Password…）"
+        }
+        print("Remote: unlock approved, entering password")
+        print("Remote: state locked=\(isScreenLocked()) displaySleep=\(displaySleep) systemSleep=\(systemSleep) inScreensaver=\(inScreensaver)")
+        if displaySleep {
+            print("Remote: display asleep, waking up")
+            wakeDisplay()
+            var attempts = 0
+            Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true, block: { [weak self] t in
+                guard let self = self else { t.invalidate(); return }
+                attempts += 1
+                if !self.displaySleep || attempts >= 12 {
+                    t.invalidate()
+                    if !self.displaySleep {
+                        self.performRemoteUnlock(password)
+                    }
+                } else {
+                    wakeDisplay()
+                }
+            })
+        } else {
+            Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false, block: { [weak self] _ in
+                self?.performRemoteUnlock(password)
+            })
+        }
+        return "已批准，正在输入密码…"
+    }
+
+    func performRemoteUnlock(_ password: String) {
+        guard isScreenLocked() else {
+            print("Remote: performRemoteUnlock skipped, not locked anymore")
+            return
+        }
+        print("Remote: performing unlock, inScreensaver=\(inScreensaver) displaySleep=\(displaySleep) locked=\(isScreenLocked())")
+        if inScreensaver {
+            print("Remote: pressing Esc to exit screensaver")
+            let src = CGEventSource(stateID: .hidSystemState)
+            CGEvent(keyboardEventSource: src, virtualKey: 0x35, keyDown: true)?.post(tap: .cghidEventTap)
+            CGEvent(keyboardEventSource: src, virtualKey: 0x35, keyDown: false)?.post(tap: .cghidEventTap)
+        }
+        print("Remote: sending password keystrokes")
+        unlockedAt = Date().timeIntervalSince1970
+        fakeKeyStrokes(password)
+        playNowPlaying()
+        runScript("unlocked")
+        print("Remote: keystrokes sent")
+    }
+
     func applicationWillTerminate(_ aNotification: Notification) {
     }
 }
