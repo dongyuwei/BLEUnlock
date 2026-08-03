@@ -76,6 +76,32 @@ Logs are written to `~/Library/Logs/BLEUnlock/bleunlock.log`.
 
 ---
 
+## Tailscale Funnel 公网访问 / Public access via Tailscale Funnel
+
+**中文**：app 启动 HTTP 服务后会自动执行 `tailscale funnel --bg <port>`，把服务发布为公网 HTTPS 地址（例如 `https://yuweim3max.taildfb994.ts.net`），并在 Remote Unlock 子菜单中显示。手机**不需要安装 Tailscale**，浏览器直接访问该地址即可。
+
+**English**: After starting the HTTP server, the app automatically runs `tailscale funnel --bg <port>`, publishing the service at a public HTTPS URL (e.g. `https://yuweim3max.taildfb994.ts.net`), shown in the Remote Unlock submenu. Your phone does **not** need Tailscale installed — just open the URL in a browser.
+
+### 前置条件 / Prerequisites
+
+- `tailscale` CLI 可用（`/usr/local/bin/tailscale`、`/opt/homebrew/bin/tailscale` 或 `/Applications/Tailscale.app/Contents/MacOS/Tailscale`）
+  The `tailscale` CLI must be available at one of the standard locations.
+- 已登录 Tailscale 且账户已启用 Funnel（首次需在 Tailscale 控制台开启 Funnel 功能）
+  Signed in to Tailscale, and Funnel enabled for the account (enable once in the admin console).
+
+### 注意事项 / Notes
+
+- **必须使用 `--bg`（后台）模式**：`tailscale funnel <port>` 前台模式的配置随命令退出而失效。app 内部使用 `--bg` 持久化。
+  **`--bg` (background) mode is required**: plain `tailscale funnel <port>` runs in the foreground and its config disappears when the command exits. The app uses `--bg` for persistence.
+- **速度**：Funnel 流量必经 Tailscale 云中继，实测单次请求约 2–3.5s（中国网络 → 海外边缘节点的双程延迟），属正常。对延迟敏感时可换回手机装 Tailscale 直连（P2P 打洞）或改用推送式方案。
+  **Speed**: Funnel always relays through Tailscale's cloud edge; measured ~2–3.5s per request from CN networks (round trip to an overseas edge). Use Tailscale direct (P2P) on the phone or a push-based design if latency matters.
+- **安全**：Funnel 把服务**暴露到公网**，任何知道 URL 的人都能发起请求——务必保留 6 位 token，并考虑失败限速。
+  **Security**: Funnel **exposes the service to the public internet**; anyone with the URL can hit it. Keep the 6-digit token and consider rate-limiting.
+- 关闭 Funnel：`tailscale funnel --https=443 off`。app 从菜单正常退出（Quit）时会自动执行此命令；`start.sh`/kill 不会触发（新实例启动时会自动重新接管）。
+  To disable: `tailscale funnel --https=443 off`. The app runs this automatically when you quit it from the menu (Quit); `start.sh`/kill does not trigger it (the next instance re-configures on start).
+
+---
+
 ## 重要：必须用 start.sh 启动，不要从 /Applications 启动
 
 > Important: launch via `./start.sh`, **not** from `/Applications`

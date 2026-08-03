@@ -38,6 +38,9 @@ final class RemoteUnlockServer {
     private var serverRunning = false
     private let serverQueue = DispatchQueue(label: "RemoteUnlockServer", qos: .userInitiated)
 
+    /// Public Tailscale Funnel URL (https://<machine>.<tailnet>.ts.net), resolved after start.
+    private(set) var funnelURL: String?
+
     // MARK: - Configuration
 
     var enabled: Bool {
@@ -73,6 +76,7 @@ final class RemoteUnlockServer {
         guard !serverRunning else { return }
         serverRunning = true
         serverQueue.async { self.serverLoop() }
+        setupFunnelIfNeeded()
     }
 
     func stop() {
@@ -80,6 +84,100 @@ final class RemoteUnlockServer {
         let fd = listenFD
         listenFD = -1
         if fd >= 0 { close(fd) } // interrupts blocking accept()
+    }
+
+    // MARK: - Tailscale Funnel
+
+    /// Disable Tailscale Funnel (called synchronously on app termination so the
+    /// public endpoint is closed before the process exits).
+    func disableFunnelSync() {
+        guard let cli = findTailscaleCLI() else { return }
+        if let out = run(cli, ["funnel", "--https=443", "off"]) {
+            let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                print("RemoteUnlock: funnel off: \(trimmed)")
+            }
+        }
+        funnelURL = nil
+    }
+
+    /// Enable `tailscale funnel` for the server port and resolve the public
+    /// ts.net URL (https://<machine>.<tailnet>.ts.net). Runs async, idempotent.
+    func setupFunnelIfNeeded() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let url = self.enableFunnel(port: self.port)
+            DispatchQueue.main.async {
+                self.funnelURL = url
+                if let url = url {
+                    print("RemoteUnlock: Funnel URL: \(url)")
+                } else {
+                    print("RemoteUnlock: Funnel not configured")
+                }
+            }
+        }
+    }
+
+    private func enableFunnel(port: UInt16) -> String? {
+        guard let cli = findTailscaleCLI() else {
+            print("RemoteUnlock: tailscale CLI not found; skipping funnel")
+            return nil
+        }
+        // Idempotent: make sure funnel is on for this port (background mode = persistent)
+        if let out = run(cli, ["funnel", "--bg", String(port)]) {
+            let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                print("RemoteUnlock: tailscale funnel: \(trimmed)")
+            }
+        }
+        // Resolve the machine's ts.net DNS name
+        guard let status = run(cli, ["status", "--json"]),
+              let dns = dnsName(fromJSON: status) else {
+            print("RemoteUnlock: could not resolve ts.net DNS name")
+            return nil
+        }
+        let host = dns.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return "https://\(host)"
+    }
+
+    private func findTailscaleCLI() -> String? {
+        let candidates = [
+            "/usr/local/bin/tailscale",
+            "/opt/homebrew/bin/tailscale",
+            "/usr/bin/tailscale",
+            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+            "\(NSHomeDirectory())/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        ]
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    private func run(_ cli: String, _ args: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cli)
+        process.arguments = args
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            print("RemoteUnlock: failed to run \(cli): \(error)")
+            return nil
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func dnsName(fromJSON status: String) -> String? {
+        let pattern = "\"DNSName\"\\s*:\\s*\"([^\"]+)\""
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: status, range: NSRange(status.startIndex..., in: status)) else {
+            return nil
+        }
+        let nsRange = match.range(at: 1)
+        guard let r = Range(nsRange, in: status) else { return nil }
+        return String(status[r])
     }
 
     // MARK: - Accept loop
