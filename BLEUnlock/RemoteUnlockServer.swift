@@ -17,6 +17,41 @@ final class RemoteUnlockServer {
 
     private let prefs = UserDefaults.standard
 
+    // MARK: - Rate limiting (brute-force protection)
+
+    private let maxFailedAttempts = 5
+    private let lockoutDuration: TimeInterval = 60
+    private let failureDelay: TimeInterval = 1.0
+    private let rateLock = NSLock()
+    private var failedAttempts = 0
+    private var lockUntil: Date?
+
+    private func isRateLimited() -> Bool {
+        rateLock.lock(); defer { rateLock.unlock() }
+        if let until = lockUntil {
+            if Date() < until { return true }
+            lockUntil = nil
+            failedAttempts = 0
+        }
+        return false
+    }
+
+    private func registerFailure() {
+        rateLock.lock(); defer { rateLock.unlock() }
+        failedAttempts += 1
+        if failedAttempts >= maxFailedAttempts {
+            lockUntil = Date().addingTimeInterval(lockoutDuration)
+            failedAttempts = 0
+            print("RemoteUnlock: rate limit triggered, locked until \(lockUntil!)")
+        }
+    }
+
+    private func resetFailures() {
+        rateLock.lock(); defer { rateLock.unlock() }
+        failedAttempts = 0
+        lockUntil = nil
+    }
+
     // MARK: - State (thread-safe)
 
     private let lockStateQueue = DispatchQueue(label: "RemoteUnlockLockState")
@@ -316,6 +351,21 @@ final class RemoteUnlockServer {
         // --- Token check (except for GET / which serves the page itself) ---
         let reqToken = query["token"] ?? headerValue(header, name: "X-Auth-Token")
         let tokenOK = (reqToken == token)
+        let tokenProtected = (path == "/status" || path == "/approve" || path == "/deny")
+
+        if tokenProtected {
+            if isRateLimited() {
+                send(fd, status: 429, body: json(["error": "too many attempts, try again later"]))
+                return
+            }
+            if !tokenOK {
+                registerFailure()
+                Thread.sleep(forTimeInterval: failureDelay) // slow down brute force
+                send(fd, status: 401, body: json(["error": "invalid token"]))
+                return
+            }
+            resetFailures()
+        }
 
         switch (method, path) {
         case ("GET", "/"):
@@ -375,6 +425,7 @@ final class RemoteUnlockServer {
         case 401: return "Unauthorized"
         case 403: return "Forbidden"
         case 404: return "Not Found"
+        case 429: return "Too Many Requests"
         default: return "Status"
         }
     }
@@ -600,9 +651,20 @@ final class RemoteUnlockServer {
           document.getElementById('hint').textContent = '请检查 Tailscale 连接';
         }
 
+        function renderRateLimited() {
+          setIcon('⏱️');
+          setState('尝试次数过多');
+          document.getElementById('actionArea').innerHTML =
+            '<button class="secondary" onclick="refresh()">重试</button>';
+          document.getElementById('hint').textContent = '请 1 分钟后再试';
+          clearInterval(pollTimer);
+          pollTimer = setInterval(poll, 10000); // slow polling; auto-recovers when lockout ends
+        }
+
         async function poll() {
           try {
             var r = await fetch('/status?token=' + encodeURIComponent(token));
+            if (r.status === 429) { renderRateLimited(); return; }
             if (r.status === 401) {
               localStorage.removeItem(TOKEN_KEY);
               showTokenInput();
@@ -626,6 +688,10 @@ final class RemoteUnlockServer {
           try {
             var r = await fetch('/approve?token=' + encodeURIComponent(token), { method: 'POST' });
             var d = await r.json();
+            if (r.status === 429) {
+              setMsg('尝试次数过多，请 1 分钟后再试', 'err');
+              return;
+            }
             setMsg(d.message || (r.ok ? '已批准' : '请求失败'), r.ok ? 'ok' : 'err');
           } catch (e) {
             setMsg('网络错误', 'err');

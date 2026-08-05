@@ -35,6 +35,7 @@
 | 来源限制 Source restriction | 只接受 Tailscale CGNAT 网段 `100.64.0.0/10` 或 `localhost` 的请求，其余返回 `403` / Only accepts requests from Tailscale CGNAT (`100.64.0.0/10`) or `localhost`; everything else gets `403` |
 | Token 认证 Token auth | 6 位数字 token；`/status`、`/approve`、`/deny` 必须携带，错误或缺失返回 `401` / A 6-digit numeric token is required for `/status`, `/approve`, `/deny`; wrong or missing tokens get `401` |
 | 页面记忆 Page memory | 页面首次输入后保存在浏览器 `localStorage` / The page remembers it in `localStorage` after first entry |
+| 失败限速 Rate limiting | 连续 5 次 token 失败后锁定 60 秒（返回 429），每次失败响应延迟 1 秒，成功解锁后重置 / After 5 consecutive token failures, requests are blocked for 60s (HTTP 429); each failed attempt is delayed 1s; counters reset on success |
 | Token 存储 Token storage | 明文存于 `UserDefaults`（`~/Library/Preferences/jp.sone.BLEUnlock.plist`）— 可接受，因为能读本机文件的人本就可解锁 Mac / Stored in plaintext in `UserDefaults`; acceptable since anyone with local file access could unlock the Mac anyway |
 
 ---
