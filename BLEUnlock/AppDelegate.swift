@@ -14,6 +14,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
     let remoteMenu = NSMenu()
     var remoteURLLabel: NSMenuItem?
     var funnelURLLabel: NSMenuItem?
+    var funnelToggleItem: NSMenuItem?
     let mainMenu = NSMenu()
     let deviceMenu = NSMenu()
     let lockRSSIMenu = NSMenu()
@@ -44,9 +45,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
             remoteURLLabel?.title = "http://\(host):\(remote.port)/  token: \(remote.token)"
             if let url = remote.funnelURL {
                 funnelURLLabel?.title = "Funnel: \(url)"
+            } else if remote.funnelEnabled {
+                funnelURLLabel?.title = "Funnel: starting…"
             } else {
-                funnelURLLabel?.title = "Funnel: not configured"
+                funnelURLLabel?.title = "Funnel: disabled"
             }
+            funnelToggleItem?.state = remote.funnelEnabled ? .on : .off
         } else if menu == lockRSSIMenu {
             for item in menu.items {
                 if item.tag == ble.lockRSSI {
@@ -668,7 +672,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         let enableRemote = remoteMenu.addItem(withTitle: "Enable Remote Unlock", action: #selector(toggleRemoteUnlock), keyEquivalent: "")
         enableRemote.state = remote.enabled ? .on : .off
         remoteURLLabel = remoteMenu.addItem(withTitle: "not started", action: nil, keyEquivalent: "")
-        funnelURLLabel = remoteMenu.addItem(withTitle: "Funnel: not configured", action: nil, keyEquivalent: "")
+        funnelURLLabel = remoteMenu.addItem(withTitle: "Funnel: disabled", action: nil, keyEquivalent: "")
+        funnelToggleItem = remoteMenu.addItem(withTitle: "Enable Funnel (public URL)", action: #selector(toggleRemoteFunnel), keyEquivalent: "")
+        funnelToggleItem?.state = remote.funnelEnabled ? .on : .off
         remoteMenu.addItem(withTitle: "Open Unlock Page (Funnel)…", action: #selector(openFunnelPage), keyEquivalent: "")
         remoteMenu.addItem(withTitle: "Open Unlock Page…", action: #selector(openRemotePage), keyEquivalent: "")
         remoteMenu.addItem(withTitle: "Set Access Token…", action: #selector(setRemoteToken), keyEquivalent: "")
@@ -788,6 +794,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         }
     }
 
+    @objc func toggleRemoteFunnel(_ item: NSMenuItem) {
+        let on = !remote.funnelEnabled
+        remote.funnelEnabled = on
+        item.state = on ? .on : .off
+        if on {
+            print("Remote: funnel enabled")
+        } else {
+            print("Remote: funnel disabled")
+        }
+    }
+
     @objc func openRemotePage() {
         if let url = URL(string: "http://127.0.0.1:\(remote.port)/") {
             NSWorkspace.shared.open(url)
@@ -796,7 +813,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
 
     @objc func openFunnelPage() {
         guard let urlString = remote.funnelURL, let url = URL(string: urlString) else {
-            errorModal("Funnel URL 不可用，请先启用 Remote Unlock 并确认 Tailscale Funnel 已配置")
+            errorModal("Funnel 未启用。请先在 Remote Unlock 菜单勾选 Enable Funnel (public URL)。")
             return
         }
         NSWorkspace.shared.open(url)
@@ -901,7 +918,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {
-        if remote.enabled {
+        if remote.enabled && remote.funnelEnabled {
             print("Remote: app terminating, disabling funnel")
             remote.disableFunnelSync()
         }

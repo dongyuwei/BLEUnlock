@@ -79,9 +79,9 @@ Logs are written to `~/Library/Logs/BLEUnlock/bleunlock.log`.
 
 ## Tailscale Funnel 公网访问 / Public access via Tailscale Funnel
 
-**中文**：app 启动 HTTP 服务后会自动执行 `tailscale funnel --bg <port>`，把服务发布为公网 HTTPS 地址（例如 `https://yuweim3max.taildfb994.ts.net`），并在 Remote Unlock 子菜单中显示。手机**不需要安装 Tailscale**，浏览器直接访问该地址即可。
+**中文**：**默认禁用**（考虑到公网暴露的风险）。在 Remote Unlock 子菜单勾选 **Enable Funnel (public URL)** 后，app 执行 `tailscale funnel --bg <port>` 把服务发布为公网 HTTPS 地址（例如 `https://yuweim3max.taildfb994.ts.net`）并显示在菜单中。取消勾选即关闭。手机**不需要安装 Tailscale**，浏览器直接访问该地址即可。
 
-**English**: After starting the HTTP server, the app automatically runs `tailscale funnel --bg <port>`, publishing the service at a public HTTPS URL (e.g. `https://yuweim3max.taildfb994.ts.net`), shown in the Remote Unlock submenu. Your phone does **not** need Tailscale installed — just open the URL in a browser.
+**English**: **Disabled by default** (public exposure risk). After checking **Enable Funnel (public URL)** in the Remote Unlock submenu, the app runs `tailscale funnel --bg <port>`, publishing the service at a public HTTPS URL (e.g. `https://yuweim3max.taildfb994.ts.net`) shown in the menu. Unchecking turns it off. Your phone does **not** need Tailscale installed — just open the URL in a browser.
 
 ### 前置条件 / Prerequisites
 
@@ -94,6 +94,8 @@ Logs are written to `~/Library/Logs/BLEUnlock/bleunlock.log`.
 
 - **必须使用 `--bg`（后台）模式**：`tailscale funnel <port>` 前台模式的配置随命令退出而失效。app 内部使用 `--bg` 持久化。
   **`--bg` (background) mode is required**: plain `tailscale funnel <port>` runs in the foreground and its config disappears when the command exits. The app uses `--bg` for persistence.
+- **启动时清理**：若 Funnel 处于禁用状态而 tailscaled 里残留着指向 8123 的旧配置，app 启动时会自动关闭它（只清理指向本 app 端口的配置，不影响你手动配置的其他端口）。
+  **Startup cleanup**: if Funnel is disabled but tailscaled still has a leftover config proxying our port, the app closes it on start (only configs pointing to this app's port, never other ports).
 - **速度**：Funnel 流量必经 Tailscale 云中继，实测单次请求约 2–3.5s（中国网络 → 海外边缘节点的双程延迟），属正常。对延迟敏感时可换回手机装 Tailscale 直连（P2P 打洞）或改用推送式方案。
   **Speed**: Funnel always relays through Tailscale's cloud edge; measured ~2–3.5s per request from CN networks (round trip to an overseas edge). Use Tailscale direct (P2P) on the phone or a push-based design if latency matters.
 - **安全**：Funnel 把服务**暴露到公网**，任何知道 URL 的人都能发起请求——务必保留 6 位 token，并考虑失败限速。

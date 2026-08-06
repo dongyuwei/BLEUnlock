@@ -76,6 +76,20 @@ final class RemoteUnlockServer {
     /// Public Tailscale Funnel URL (https://<machine>.<tailnet>.ts.net), resolved after start.
     private(set) var funnelURL: String?
 
+    /// Whether Tailscale Funnel (public internet exposure) is enabled.
+    /// Default OFF. Turning it on starts funnel; turning it off stops it.
+    var funnelEnabled: Bool {
+        get { prefs.bool(forKey: "remoteFunnelEnabled") }
+        set {
+            prefs.set(newValue, forKey: "remoteFunnelEnabled")
+            if newValue {
+                setupFunnelIfNeeded()
+            } else {
+                disableFunnelSync()
+            }
+        }
+    }
+
     // MARK: - Configuration
 
     var enabled: Bool {
@@ -111,7 +125,26 @@ final class RemoteUnlockServer {
         guard !serverRunning else { return }
         serverRunning = true
         serverQueue.async { self.serverLoop() }
-        setupFunnelIfNeeded()
+        if funnelEnabled {
+            setupFunnelIfNeeded()
+        } else {
+            cleanupFunnelIfOurs()
+        }
+    }
+
+    /// If Funnel is enabled in tailscaled but proxies OUR port (a leftover from
+    /// an earlier run), close it so "default off" is actually off.
+    /// Never touches configs that proxy other ports.
+    private func cleanupFunnelIfOurs() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self, let cli = self.findTailscaleCLI() else { return }
+            guard let status = self.run(cli, ["serve", "status"]) else { return }
+            let target = "127.0.0.1:\(self.port)"
+            if status.contains(target), status.lowercased().contains("funnel on") {
+                self.run(cli, ["funnel", "--https=443", "off"])
+                print("RemoteUnlock: closed leftover funnel proxying \(target)")
+            }
+        }
     }
 
     func stop() {
